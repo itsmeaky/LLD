@@ -1,0 +1,281 @@
+Functional Requirements
+
+Users can browse restaurants by location.
+Users can view menus and place orders.
+Users can track orders in real-time.
+Restaurants can accept/reject orders.
+Payment handling (simplified as online payment or COD).
+Delivery partners can accept delivery tasks.
+Notifications to users about order status.
+
+2. Non-Functional Requirements
+
+Scalability: Handle thousands of concurrent users and orders.
+Availability: Users must be able to place orders 24/7.
+Low latency: Real-time order tracking.
+Consistency: Ensure accurate order state and inventory.
+====================================================================================================================
+3. Core Entities
+
+User: name, address, payment info.
+Restaurant: name, menu, location.
+MenuItem: name, price, availability.
+Order: list of MenuItems, total amount, status.
+DeliveryPartner: name, location, status.
+Payment: amount, status, type.
+NotificationService: to notify users/delivery partners.
+=====================================================================================================================
+4. Design Patterns
+
+Singleton: For services like NotificationService, PaymentService.
+Observer: To notify users when order status changes.
+Strategy: Payment processing (COD vs Online Payment).
+Factory: For creating Order or Payment objects.
+
+===================================================================================================================
+edge cases:
+Restaurant rejects order → Notify user immediately.
+Delivery partner unavailable → Reassign automatically.
+Payment fails → Cancel order or retry.
+Menu item unavailable → User must choose another item.
+Location mismatch → Order cannot be placed outside delivery radius.
+
+===============================================================================================================
+code :
+
+#include <iostream>
+#include <vector>
+#include <string>
+#include <memory>
+#include <map>
+
+using namespace std;
+
+// ---------------- ENUMS ----------------
+enum class OrderStatus { PLACED, CONFIRMED, PREPARING, READY_FOR_PICKUP, OUT_FOR_DELIVERY, DELIVERED, REJECTED, PAYMENT_FAILED };
+enum class PaymentType { COD, ONLINE };
+enum class PaymentStatus { SUCCESS, FAILED };
+
+// ---------------- MenuItem ----------------
+class MenuItem {
+public:
+    string name;
+    double price;
+    bool available;
+
+    MenuItem(string n, double p, bool a = true) : name(n), price(p), available(a) {}
+};
+
+// ---------------- Forward Declarations ----------------
+class Order;
+class NotificationService;
+
+// ---------------- Observer Pattern ----------------
+class Observer {
+public:
+    virtual void update(const string& message) = 0;
+};
+
+// ---------------- User ----------------
+class User : public Observer {
+public:
+    string name;
+    string address;
+
+    User(string n, string a) : name(n), address(a) {}
+
+    void update(const string& message) override {
+        cout << "Notification to User " << name << ": " << message << endl;
+    }
+};
+
+// ---------------- DeliveryPartner ----------------
+class DeliveryPartner : public Observer {
+public:
+    string name;
+    string location;
+
+    DeliveryPartner(string n, string loc) : name(n), location(loc) {}
+
+    void update(const string& message) override {
+        cout << "Notification to Delivery Partner " << name << ": " << message << endl;
+    }
+};
+
+// ---------------- NotificationService (Singleton) ----------------
+class NotificationService {
+private:
+    NotificationService() {}
+public:
+   // static NotificationService& getInstance() {
+    //    static NotificationService instance;
+    //    return instance;
+    //}
+
+    void notify(Observer* observer, const string& message) {
+        observer->update(message);
+    }
+};
+
+// ---------------- Payment Strategy ----------------
+class PaymentStrategy {
+public:
+    virtual PaymentStatus pay(double amount) = 0;
+};
+
+class CODPayment : public PaymentStrategy {
+public:
+    PaymentStatus pay(double amount) override {
+        cout << "Payment of " << amount << " collected via Cash on Delivery.\n";
+        return PaymentStatus::SUCCESS;
+    }
+};
+
+class OnlinePayment : public PaymentStrategy {
+public:
+    PaymentStatus pay(double amount) override {
+        cout << "Processing online payment of " << amount << ".\n";
+        return PaymentStatus::SUCCESS;
+    }
+};
+
+// ---------------- Order ----------------
+class Order {
+private:
+    double calculateTotal() {
+        double total = 0;
+        for (auto& item : items) {
+            total += item.price;
+        }
+        return total;
+    }
+
+public:
+    int id;
+    User* user;
+    vector<MenuItem> items;
+    OrderStatus status;
+    PaymentStrategy* paymentStrategy;
+
+    Order(int oid, User* u, const vector<MenuItem>& menuItems, PaymentStrategy* pStrategy)
+        : id(oid), user(u), items(menuItems), status(OrderStatus::PLACED), paymentStrategy(pStrategy) {}
+
+    void processOrder() {
+        double total = calculateTotal();
+        PaymentStatus payStatus = paymentStrategy->pay(total);
+        if (payStatus == PaymentStatus::FAILED) {
+            status = OrderStatus::PAYMENT_FAILED;
+            NotificationService::getInstance().notify(user, "Payment Failed for Order " + to_string(id));
+        } else {
+            status = OrderStatus::CONFIRMED;
+            NotificationService::getInstance().notify(user, "Order " + to_string(id) + " Confirmed");
+        }
+    }
+
+    void updateStatus(OrderStatus newStatus) {
+        status = newStatus;
+        NotificationService::getInstance().notify(user, "Order " + to_string(id) + " status updated to " + to_string(static_cast<int>(status)));
+    }
+};
+
+// ---------------- Restaurant ----------------
+class Restaurant {
+public:
+    string name;
+    string location;
+    vector<MenuItem> menu;
+
+    Restaurant(string n, string loc, const vector<MenuItem>& m) : name(n), location(loc), menu(m) {}
+
+    bool acceptOrder(Order* order) {
+        cout << "Restaurant " << name << " accepted order " << order->id << endl;
+        order->updateStatus(OrderStatus::PREPARING);
+        return true;
+    }
+
+    void rejectOrder(Order* order) {
+        cout << "Restaurant " << name << " rejected order " << order->id << endl;
+        order->updateStatus(OrderStatus::REJECTED);
+    }
+
+    void showMenu() {
+        cout << "Menu for " << name << ":\n";
+        for (size_t i = 0; i < menu.size(); i++) {
+            cout << i + 1 << ". " << menu[i].name << " - " << menu[i].price << (menu[i].available ? "" : " (Unavailable)") << endl;
+        }
+    }
+};
+
+// ---------------- Swiggy System ----------------
+class SwiggySystem {
+private:
+    map<string, vector<Restaurant*>> restaurantsByLocation;
+
+public:
+    void addRestaurant(Restaurant* r) {
+        restaurantsByLocation[r->location].push_back(r);
+    }
+
+    void browseRestaurants(const string& location) {
+        if (restaurantsByLocation.find(location) == restaurantsByLocation.end()) {
+            cout << "No restaurants available in " << location << endl;
+            return;
+        }
+        cout << "Restaurants in " << location << ":\n";
+        for (size_t i = 0; i < restaurantsByLocation[location].size(); i++) {
+            cout << i + 1 << ". " << restaurantsByLocation[location][i]->name << endl;
+        }
+    }
+
+    Restaurant* selectRestaurant(const string& location, int index) {
+        if (restaurantsByLocation.find(location) == restaurantsByLocation.end()) return nullptr;
+        if (index < 0 || index >= restaurantsByLocation[location].size()) return nullptr;
+        return restaurantsByLocation[location][index];
+    }
+};
+
+// ---------------- Main ----------------
+int main() {
+    // Users
+    User user1("Amit", "Delhi");
+
+    // Delivery Partner (not used in browsing for simplicity)
+    DeliveryPartner dp1("Ravi", "Delhi");
+
+    // Restaurants and Menus
+    MenuItem item1("Pizza", 250);
+    MenuItem item2("Burger", 120);
+    vector<MenuItem> menu1 = { item1, item2 };
+
+    Restaurant res1("Dominos", "Delhi", menu1);
+    Restaurant res2("McDonalds", "Delhi", { MenuItem("Fries", 80), MenuItem("Coke", 50) });
+
+    // Swiggy System
+    SwiggySystem swiggy;
+    swiggy.addRestaurant(&res1);
+    swiggy.addRestaurant(&res2);
+
+    // User browsing restaurants
+    swiggy.browseRestaurants("Delhi");
+
+    // User selects restaurant and views menu
+    Restaurant* selectedRestaurant = swiggy.selectRestaurant("Delhi", 0); // Choosing Dominos
+    if (selectedRestaurant) {
+        selectedRestaurant->showMenu();
+    }
+
+    // User places order
+    CODPayment cod;
+    OnlinePayment online;
+    vector<MenuItem> orderItems = { item1, item2 }; // Select both items
+    Order order1(1, &user1, orderItems, &online);
+    order1.processOrder();
+    selectedRestaurant->acceptOrder(&order1);
+
+    // Update order status
+    order1.updateStatus(OrderStatus::READY_FOR_PICKUP);
+    order1.updateStatus(OrderStatus::OUT_FOR_DELIVERY);
+    order1.updateStatus(OrderStatus::DELIVERED);
+
+    return 0;
+}
