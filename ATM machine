@@ -2,7 +2,7 @@ Requirements
 1. support operations = check balance, cash withdrawal , cash deposit
 2. authenticate using card and pin
 3. update on bank
-4. cash dispenser
+4. cash dispenser -> cash withdraw 
 5. concurrent access
 
 ======================================================================================================
@@ -19,7 +19,34 @@ design patterns used :
 *Chain of Responsibility → DispenseChain (interface) and concrete NoteDispenser100, NoteDispenser50, NoteDispenser20. -> Handles cash dispensing in denominations.
 *Singleton Pattern → ATMSystem (has static INSTANCE). -> Ensures only one ATM system exists.
 
+====================Edge cases ==================================================================
 
+ Edge Cases & Handling in ATM LLD
+1. Wrong PIN Attempts multiple times -> Maintain a counter in HasCardState. -> 
+                       After 3 wrong attempts → block card / eject card / set ATM back to IdleState.
+
+2. Insufficient Account Balance -> BankService::withdraw() must check balance first.
+                            If insufficient → decline transaction with message "Insufficient Funds".
+
+3. ATM Out of Cash -> CashDispenser::dispenseCash() checks if exact notes can be dispensed.
+                        If not → rollback withdrawal from account (transaction atomicity).
+                        Show message "ATM cannot dispense requested amount".
+
+4. Amount Not Divisible by Available Denominations -> Chain of Responsibility (NoteDispenser) must validate remainder.
+                                        If remainder is not 0 → decline transaction.
+
+5. Card Ejected in Middle of Transaction -> State machine ensures if card ejected → rollback incomplete operation.
+                            Example: If cash deducted from account but not dispensed → rollback balance.
+
+6. Concurrent Withdrawals -> Use std::mutex in BankService::withdraw() and deposit().
+                        Ensure atomic account updates (withdraw + update balance must be one locked operation).
+
+8. Network/Bank Service Unavailable -> Add a new OutOfServiceState.
+                                    ATM displays "Service temporarily unavailable".
+
+10. Multiple Cards Inserted -> IdleState → only accepts insertCard().
+                HasCardState / AuthenticatedState → ignore further insert requests.
+======================================== code ================================================================
 #include <iostream>
 #include <map>
 #include <memory>
