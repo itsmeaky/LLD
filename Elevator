@@ -1,0 +1,371 @@
+Requirements
+
+— Functional requirements (FR)
+FR1: Accept floor requests (up/down) from building floors.
+FR2: Accept cabin requests (target floor) from inside an elevator.
+FR3: Assign incoming requests to an elevator using a scheduler (e.g., nearest-first).
+FR4: Move elevator between floors, open/close doors, and stop at requested floors.
+FR5: Support multiple elevators and concurrent requests.
+FR6: Provide elevator and request status (idle, moving, doors open, current floor).
+FR7: Allow canceling a request (optional / future).
+
+2 — Non-functional requirements (NFR)
+
+NFR1: Responsiveness — assign requests quickly (low latency).
+NFR2: Scalability — support N elevators and M floors without changing core logic.
+NFR3: Extensibility — scheduler, door logic, or movement policy replaceable.
+NFR4: Correctness / Safety — elevator must not overshoot floors and must open doors only when stopped.
+NFR5: Maintainability — modular code and clear interfaces.
+
+==============================classes========================================================================
+classes :
+ElevatorSystem : control system
+IScheduler -> nearest schduler
+Elevator -> 
+Request -> floor request and cabin request 
+door
+
+================design patterns used :============================================================================
+design patterns used :
+
+Singleton: ElevatorController — one orchestrator for the system.
+Strategy: IScheduler interface, with concrete NearestScheduler — allows swapping assignment policy.
+Observer (or publish/subscribe): optional — elevators can publish state changes for UI/monitoring.
+Command: treating requests as objects (Request) decouples invoker and executor.
+State: door behavior (OPEN, CLOSED, OPENING, CLOSING) can be modeled as a state machine.
+Factory: simple factory to create requests (not necessary but possible).
+
+========================= code : ==============================================================================
+
+code : 
+#include <iostream>
+#include <vector>
+#include <set>
+#include <map>
+#include <memory>
+#include <optional>
+#include <thread>
+#include <chrono>
+using namespace std;
+
+// ---------- ENUMS ----------
+enum class Direction { UP, DOWN, IDLE };
+enum class RequestSource { INTERNAL, EXTERNAL };
+
+// ---------- REQUEST ----------
+class Request {
+public:
+    Direction direction;
+    RequestSource source;
+    int targetFloor;
+
+    Request(Direction dir, RequestSource src, int floor)
+        : direction(dir), source(src), targetFloor(floor) {}
+};
+
+// Forward declarations
+class Elevator;
+class ElevatorObserver;
+
+// ---------- STATE INTERFACE ----------
+class ElevatorState {
+public:
+    virtual void addRequest(Elevator* elevator, Request req) = 0;
+    virtual Direction getDirection() = 0;
+    virtual void move(Elevator* elevator) = 0;
+    virtual ~ElevatorState() {}
+};
+
+// ---------- IDLE STATE ----------
+class IdleState : public ElevatorState {
+public:
+    Direction getDirection() override { return Direction::IDLE; }
+
+    void addRequest(Elevator* elevator, Request req) override {
+    if (req.targetFloor > elevator->getCurrentFloor()) {
+        elevator->upRequests.insert(req.targetFloor);
+        elevator->setState(new MovingUpState());
+    } else if (req.targetFloor < elevator->getCurrentFloor()) {
+        elevator->downRequests.insert(req.targetFloor);
+        elevator->setState(new MovingDownState());
+    }
+    
+    void move(Elevator* elevator) override {
+        cout << "Elevator " << elevator->getId() << " is idle." << endl;
+    }
+};
+
+
+
+// ---------- MOVING UP STATE ----------
+class MovingUpState : public ElevatorState {
+public:
+    Direction getDirection() override { return Direction::UP; }
+void addRequest(Elevator* elevator, Request req) override{
+    if (req.targetFloor >= elevator->getCurrentFloor())
+        elevator->upRequests.insert(req.targetFloor);
+    else
+        elevator->downRequests.insert(req.targetFloor);
+}
+void move(Elevator* elevator) override {
+    if (!elevator->upRequests.empty()) {
+        int nextFloor = *elevator->upRequests.begin(); // smallest higher floor
+        elevator->setCurrentFloor(nextFloor);
+        elevator->upRequests.erase(elevator->upRequests.begin());
+        elevator->notifyObservers();
+        this_thread::sleep_for(chrono::milliseconds(500));
+    } else {
+        elevator->setState(new IdleState());
+    }
+}
+};
+
+// ---------- MOVING DOWN STATE ----------
+class MovingDownState : public ElevatorState {
+public:
+    ;
+    Direction getDirection() override { return Direction::DOWN; }
+    ;
+    void addRequest(Elevator* elevator, Request req) override {
+    if (req.targetFloor <= elevator->getCurrentFloor())
+        elevator->downRequests.insert(req.targetFloor);
+    else
+        elevator->upRequests.insert(req.targetFloor);
+}
+    void move(Elevator* elevator) override {
+    if (!elevator->downRequests.empty()) {
+        int nextFloor = *elevator->downRequests.begin(); // largest lower floor
+        elevator->setCurrentFloor(nextFloor);
+        elevator->downRequests.erase(elevator->downRequests.begin());
+        elevator->notifyObservers();
+        this_thread::sleep_for(chrono::milliseconds(500));
+    } else {
+        elevator->setState(new IdleState());
+    }
+}
+};
+
+
+
+
+
+// ---------- ELEVATOR ----------
+class Elevator {
+    int id;
+    int currentFloor;
+    ElevatorState* state;
+    vector<ElevatorObserver*> observers;
+
+public:
+    set<int> upRequests;                 // ascending order
+    set<int, greater<int>> downRequests; // descending order
+
+    Elevator(int eid) : id(eid), currentFloor(0), state(new IdleState()) {};
+
+    void addObserver(ElevatorObserver* obs){
+    observers.push_back(obs);
+    }
+    Direction getDirection(){ return state->getDirection(); }
+    void setCurrentFloor(int floor){ currentFloor = floor; };
+    void notifyObservers(){
+      for (auto obs : observers) obs->update(this);
+    }
+    void setState(ElevatorState* st){ state = st; }
+    void addRequest(Request req){ state->addRequest(this, req); }
+    void move(){ state->move(this); }
+    int getCurrentFloor() { return currentFloor; }
+    int getId() { return id; }
+};
+
+// ---------- OBSERVER INTERFACE ----------
+class ElevatorObserver {
+public:
+    virtual void update(Elevator* elevator) = 0;
+};
+
+
+// ---------- DISPLAY OBSERVER ----------
+class Display : public ElevatorObserver {
+public:
+    void update(Elevator* elevator) override {
+        cout << "Elevator " << elevator->getId()
+             << " reached floor " << elevator->getCurrentFloor() << endl;
+    }
+};
+
+// ---------- SELECTION STRATEGY INTERFACE ----------
+class ElevatorSelectionStrategy {
+public:
+    virtual optional<Elevator*> selectElevator(vector<Elevator*>& elevators, Request req) = 0;
+    virtual ~ElevatorSelectionStrategy() {}
+};
+
+// ---------- NEAREST ELEVATOR STRATEGY ----------
+class NearestElevatorStrategy : public ElevatorSelectionStrategy {
+public:
+    optional<Elevator*> selectElevator(vector<Elevator*>& elevators, Request req) override {
+        if (elevators.empty()) return nullopt;
+        Elevator* best = elevators[0];
+        int minDist = abs(best->getCurrentFloor() - req.targetFloor);
+        for (auto e : elevators) {
+            int dist = abs(e->getCurrentFloor() - req.targetFloor);
+            if (dist < minDist) {
+                best = e;
+                minDist = dist;
+            }
+        }
+        return best;
+    }
+};
+
+// ---------- ELEVATOR SYSTEM (Singleton) ----------
+class ElevatorSystem {
+    static ElevatorSystem* instance;
+    ElevatorSelectionStrategy* strategy;
+    vector<Elevator*> elevators;
+
+    ElevatorSystem() {
+        strategy = new NearestElevatorStrategy();
+    }
+
+public:
+    static ElevatorSystem* getInstance() {
+        if (!instance) instance = new ElevatorSystem();
+        return instance;
+    }
+
+    void addElevator(Elevator* e) { elevators.push_back(e); }
+
+    void requestElevator(int floor, Direction dir) {
+        Request req(dir, RequestSource::EXTERNAL, floor);
+        auto elevatorOpt = strategy->selectElevator(elevators, req);
+        if (elevatorOpt.has_value()) {
+            (*elevatorOpt)->addRequest(req);
+        }
+    }
+    void selectFloor(int Elevatorid, int floor){
+        findcurrentfloor and give dir according up or down
+        elevator[id]->addRequest{dir, RequestSource::INTERNAL, floor}
+    }
+};
+ElevatorSystem* ElevatorSystem::instance = nullptr;
+
+  
+// ---------- DEMO ----------
+int main() {
+    ElevatorSystem* system = ElevatorSystem::getInstance();
+    Elevator e1(1), e2(2);
+    Display d1, d2;
+
+    e1.addObserver(&d1);
+    e2.addObserver(&d2);
+
+    system->addElevator(&e1);
+    system->addElevator(&e2);
+
+    // Multiple requests
+    system->requestElevator(3, Direction::UP);
+    system->requestElevator(7, Direction::UP);
+    system->requestElevator(2, Direction::DOWN);
+
+    // simulate movement
+    for (int i = 0; i < 5; i++) {
+        e1.move();
+        e2.move();
+    }
+
+    return 0;
+}
+
+==============================Interview Questions========================================================================================
+Basic Understanding Questions
+1. What are the functional and non-functional requirements of this elevator system?
+
+Functional: handle requests, maintain state, notify observers, manage multiple elevators, choose the best elevator for a request.
+Non-functional: scalability, concurrency safety, extensibility, reliability, maintainability.
+
+2. What are the core entities in your design?
+Elevator, ElevatorSystem, Request, ElevatorState, ElevatorObserver, ElevatorSelectionStrategy.
+
+3. What design patterns have you used? Why?
+Observer → to notify display/UI when elevator state changes.
+State → to represent Idle, MovingUp, MovingDown behavior dynamically.
+Strategy → to choose best elevator (NearestElevatorStrategy).
+Singleton → ElevatorSystem (only one central controller).
+
+🔹 Deep Dive Questions
+
+
+4. How do you maintain requests inside the elevator?
+
+Using two std::set:
+upRequests (ascending order) for upward calls.
+downRequests (descending order) for downward calls.
+Elevator processes requests in sorted order depending on direction.
+
+5. What happens if a user presses both UP and DOWN at the same floor?
+
+Two separate requests will be generated: one for UP and one for DOWN.
+They are stored separately in upRequests and downRequests.
+Depending on elevator direction/state, it will service one first, then the other.
+
+*What happens when multiple elevators are present? How do you assign requests?
+
+ElevatorSystem uses a selection strategy (default: NearestElevatorStrategy) to pick the best elevator.
+This can be extended with other strategies (e.g., load balancing, least recently used, direction-based strategy).
+
+*How does the Observer pattern help here?
+
+Observers (e.g., Display boards, monitoring systems) automatically get updates whenever the elevator moves floors, without tight coupling.
+
+*Why did you use State pattern instead of simple if-else checks?
+
+State pattern allows cleaner separation of logic: Idle, MovingUp, MovingDown.
+If-else would make the code less extensible and harder to maintain.
+
+🔹 Advanced/Scalability Questions
+
+*How would you handle concurrency if multiple users press buttons at the same time?
+
+Protect upRequests and downRequests with mutex locks.
+Use thread-safe queues.
+Each elevator can run in its own thread, continuously polling its requests.
+
+*What if the system needs to support 100 elevators in a skyscraper?
+
+ElevatorSystem should use a more sophisticated selection strategy (e.g., zone allocation, AI-based traffic prediction).
+Requests can be sharded across elevators to avoid bottlenecks.
+
+What happens if an elevator breaks down in the middle of operation?
+
+ElevatorSystem should detect failure and reassign pending requests to other elevators.
+Observers can display “Out of Service” state.
+
+How would you test this system?
+
+Unit tests for state transitions (Idle → MovingUp → Idle).
+Integration tests for multiple requests, multiple elevators.
+
+Stress tests with concurrent requests.
+
+🔹 Trade-off / Design Extension Questions
+
+What if requests keep coming while the elevator is moving?
+
+Requests are dynamically inserted into upRequests/downRequests.
+Elevator continues servicing without stopping its current movement.
+
+Would you allow an elevator to change direction mid-way if a closer request appears?
+
+Typically no, because it reduces predictability.
+Elevators follow SCAN algorithm (complete all requests in one direction, then reverse).
+
+Can you support VIP elevators (priority requests)?
+
+Yes, by using a priority queue instead of set, or by extending strategy to favor certain requests.
+
+Why did you choose std::set instead of std::queue?
+
+set maintains sorted order (like a TreeSet in Java).
+
+This ensures we always serve the “next closest floor” in the right direction.
