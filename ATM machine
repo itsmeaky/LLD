@@ -1,0 +1,403 @@
+Requirements
+1. support operations = check balance, cash withdrawal , cash deposit
+2. authenticate using card and pin
+3. update on bank
+4. cash dispenser
+5. concurrent access
+
+======================================================================================================
+classes 
+Card : Atm card -> cardnumber and pin
+Account : bank account -> account number , balance
+cashdispenser -> dispense cash
+Bank Service -> manage account and card
+NoteDispenser (interface) -> Notedispence 10 , 50 ,100
+ATMSystem (Singleton) → Central controller delegating to states.
+======================================================================================================
+design patterns used :
+*State Pattern → ATMState (interface) with implementations: IdleState, HasCardState, AuthenticatedState. -> Handles different states of the ATM.
+*Chain of Responsibility → DispenseChain (interface) and concrete NoteDispenser100, NoteDispenser50, NoteDispenser20. -> Handles cash dispensing in denominations.
+*Singleton Pattern → ATMSystem (has static INSTANCE). -> Ensures only one ATM system exists.
+
+
+#include <iostream>
+#include <map>
+#include <memory>
+#include <string>
+#include <atomic>
+using namespace std;
+
+// ---------------- ENUM ----------------
+enum class OperationType { WITHDRAW_CASH, DEPOSIT_CASH, CHECK_BALANCE };
+
+// Forward declarations
+class ATMSystem;
+class Card;
+
+// ---------------- ATM STATE INTERFACE ----------------
+class ATMState {
+public:
+    virtual void insertCard(ATMSystem* atm, string cardNumber) = 0;
+    virtual void enterPin(ATMSystem* atm, string pin) = 0;
+    virtual void selectOperation(ATMSystem* atm, OperationType type, int amount) = 0;
+    virtual void ejectCard(ATMSystem* atm) = 0;
+    virtual ~ATMState() {}
+};
+
+// ---------------- CARD CLASS ----------------
+class Card {
+    string cardNumber;
+    string pin;
+public:
+    Card(string number, string pinCode) : cardNumber(number), pin(pinCode) {}
+    string getNumber() { return cardNumber; }
+    string getPin() { return pin; }
+};
+
+// ---------------- ACCOUNT CLASS ----------------
+class Account {
+    string accountNumber;
+    double balance;
+public:
+    Account(string accNum, double bal = 0.0) : accountNumber(accNum), balance(bal) {}
+    double getBalance() { return balance; }
+    void deposit(double amt) { balance += amt; }
+    bool withdraw(double amt) {
+        if (amt > balance) return false;
+        balance -= amt;
+        return true;
+    }
+    string getAccountNumber() { return accountNumber; }
+};
+
+// ---------------- BANK SERVICE ----------------
+class BankService {
+    map<string, Card*> cards;
+    map<string, Account*> accounts;
+    map<Card*, Account*> cardAccMap;
+
+public:
+    void linkCard(Account* acc, Card* card) {
+        cards[card->getNumber()] = card;
+        accounts[acc->getAccountNumber()] = acc;
+        cardAccMap[card] = acc;
+    }
+
+    Account* getAccount(Card* card) {
+        return cardAccMap[card];
+    }
+
+    bool authenticateCard(Card* card, string pin) {
+        return (card->getPin() == pin);
+    }
+
+    void deposit(Card* card, double amt) {
+        cardAccMap[card]->deposit(amt);
+    }
+
+    bool withdraw(Card* card, double amt) {
+        return cardAccMap[card]->withdraw(amt);
+    }
+
+    double getBalance(Card* card) {
+        return cardAccMap[card]->getBalance();
+    }
+};
+
+// ---------------- DISPENSE CHAIN INTERFACE ----------------
+class DispenseChain {
+public:
+    virtual void setNextChain(DispenseChain* next) = 0;
+    virtual bool dispense(int amount) = 0;
+    virtual ~DispenseChain() {}
+};
+
+// ---------------- NOTE DISPENSER ----------------
+class NoteDispenser : public DispenseChain {
+protected:
+    int noteValue;
+    int numNotes;
+    DispenseChain* nextChain;
+
+public:
+    NoteDispenser(int value, int count) : noteValue(value), numNotes(count), nextChain(nullptr) {}
+
+    void setNextChain(DispenseChain* next) override {
+        nextChain = next;
+    }
+
+    bool dispense(int amount) override {
+        int num = min(amount / noteValue, numNotes);
+        int remainder = amount - num * noteValue;
+
+        if (num > 0)
+            cout << "Dispensing " << num << " notes of " << noteValue << endl;
+
+        if (remainder > 0 && nextChain != nullptr)
+            return nextChain->dispense(remainder);
+
+        return (remainder == 0);
+    }
+};
+
+// Concrete dispensers
+class NoteDispenser100 : public NoteDispenser {
+public:
+    NoteDispenser100(int count) : NoteDispenser(100, count) {}
+};
+
+class NoteDispenser50 : public NoteDispenser {
+public:
+    NoteDispenser50(int count) : NoteDispenser(50, count) {}
+};
+
+class NoteDispenser20 : public NoteDispenser {
+public:
+    NoteDispenser20(int count) : NoteDispenser(20, count) {}
+};
+
+// ---------------- CASH DISPENSER ----------------
+class CashDispenser {
+    DispenseChain* chain;
+public:
+    CashDispenser() {
+        DispenseChain* d100 = new NoteDispenser100(10);
+        DispenseChain* d50 = new NoteDispenser50(10);
+        DispenseChain* d20 = new NoteDispenser20(10);
+
+        d100->setNextChain(d50);
+        d50->setNextChain(d20);
+
+        chain = d100;
+    }
+
+    bool dispenseCash(int amount) {
+        return chain->dispense(amount);
+    }
+};
+
+// ---------------- ATM SYSTEM (SINGLETON) ----------------
+class ATMSystem {
+    static ATMSystem* INSTANCE;
+    ATMState* currentState;
+    Card* currentCard;
+    CashDispenser* cashDispenser;
+    BankService* bankService;
+
+    ATMSystem() {
+        currentState = nullptr;
+        cashDispenser = new CashDispenser();
+        bankService = new BankService();
+    }
+
+public:
+    static ATMSystem* getInstance() {
+        if (!INSTANCE) INSTANCE = new ATMSystem();
+        return INSTANCE;
+    }
+
+    void setState(ATMState* state) { currentState = state; }
+    void setCurrentCard(Card* card) { currentCard = card; }
+    Card* getCurrentCard() { return currentCard; }
+    BankService* getBankService() { return bankService; }
+    CashDispenser* getCashDispenser() { return cashDispenser; }
+
+    // Delegates
+    void insertCard(string cardNum) { currentState->insertCard(this, cardNum); }
+    void enterPin(string pin) { currentState->enterPin(this, pin); }
+    void selectOperation(OperationType type, int amount) { currentState->selectOperation(this, type, amount); }
+    void ejectCard() { currentState->ejectCard(this); }
+};
+
+ATMSystem* ATMSystem::INSTANCE = nullptr;
+
+// ---------------- STATES ----------------
+class IdleState : public ATMState {
+public:
+    void insertCard(ATMSystem* atm, string cardNumber) override {
+        cout << "Card inserted: " << cardNumber << endl;
+        atm->setState(new HasCardState());
+    }
+    void enterPin(ATMSystem*, string) override { cout << "Insert card first\n"; }
+    void selectOperation(ATMSystem*, OperationType, int) override { cout << "Insert card first\n"; }
+    void ejectCard(ATMSystem*) override { cout << "No card inserted\n"; }
+};
+
+class HasCardState : public ATMState {
+public:
+    void insertCard(ATMSystem*, string) override { cout << "Card already inserted\n"; }
+    void enterPin(ATMSystem* atm, string pin) override {
+        if (atm->getBankService()->authenticateCard(atm->getCurrentCard(), pin)) {
+            cout << "PIN Correct\n";
+            atm->setState(new AuthenticatedState());
+        } else {
+            cout << "Wrong PIN\n";
+        }
+    }
+    void selectOperation(ATMSystem*, OperationType, int) override { cout << "Enter PIN first\n"; }
+    void ejectCard(ATMSystem* atm) override { 
+        cout << "Card ejected\n";
+        atm->setState(new IdleState());
+    }
+};
+
+class AuthenticatedState : public ATMState {
+public:
+    void insertCard(ATMSystem*, string) override { cout << "Card already inserted\n"; }
+    void enterPin(ATMSystem*, string) override { cout << "PIN already entered\n"; }
+    void selectOperation(ATMSystem* atm, OperationType type, int amount) override {
+        Card* card = atm->getCurrentCard();
+        BankService* bank = atm->getBankService();
+
+        switch(type) {
+            case OperationType::CHECK_BALANCE:
+                cout << "Balance: " << bank->getBalance(card) << endl;
+                break;
+            case OperationType::DEPOSIT_CASH:
+                bank->deposit(card, amount);
+                cout << "Deposited " << amount << endl;
+                break;
+            case OperationType::WITHDRAW_CASH:
+                if (bank->withdraw(card, amount)) {
+                    if (atm->getCashDispenser()->dispenseCash(amount))
+                        cout << "Withdrawn: " << amount << endl;
+                    else
+                        cout << "ATM cannot dispense requested amount\n";
+                } else {
+                    cout << "Insufficient funds\n";
+                }
+                break;
+        }
+    }
+    void ejectCard(ATMSystem* atm) override {
+        cout << "Card ejected\n";
+        atm->setState(new IdleState());
+    }
+};
+
+// ---------------- DEMO ----------------
+int main() {
+    ATMSystem* atm = ATMSystem::getInstance();
+    atm->setState(new IdleState());
+
+    // Setup bank
+    BankService* bank = atm->getBankService();
+    Account* acc = new Account("123", 1000);
+    Card* card = new Card("1111-2222", "1234");
+    bank->linkCard(acc, card);
+    atm->setCurrentCard(card);
+
+    // Flow
+    atm->insertCard(card->getNumber());
+    atm->enterPin("1234");
+    atm->selectOperation(OperationType::CHECK_BALANCE, 0);
+    atm->selectOperation(OperationType::WITHDRAW_CASH, 270);
+    atm->selectOperation(OperationType::CHECK_BALANCE, 0);
+    atm->ejectCard();
+}
+
+
+===============================flow daigram ===================================================================================
+flow daigram : 
+ ┌─────────────┐
+ │   IdleState │
+ └──────┬──────┘
+        │ Insert Card
+        ▼
+ ┌──────────────┐
+ │ HasCardState │
+ └──────┬───────┘
+        │ Enter PIN (valid)
+        ▼
+ ┌──────────────────┐
+ │ AuthenticatedState│
+ └───┬─────┬────────┘
+     │     │
+     │     │
+     ▼     ▼
+ Withdraw / Deposit / Check Balance
+     │
+     ▼
+  Eject Card
+     │
+     ▼
+ ┌─────────────┐
+ │   IdleState │
+ └─────────────┘
+
+==============================Interview Questions========================================================================================
+Q1. How does the State Pattern help in this ATM system?
+
+Answer:
+
+It encapsulates behaviors for each ATM state (Idle, HasCard, Authenticated).
+Eliminates if-else checks by delegating behavior to the current state object.
+Makes it easy to add new states (e.g., OutOfServiceState).
+
+Q2. What edge cases exist in Withdraw operation?
+
+Answer:
+Insufficient account balance → transaction denied.
+ATM lacks enough notes → must decline or dispense partial (if allowed).
+Amount not divisible by note denominations → decline request (e.g., withdraw 30 with only 50s).
+Concurrent withdrawals from same account → must be thread-safe in real systems.
+Q3. How is Chain of Responsibility applied here?
+
+Answer:
+The NoteDispenser100 → NoteDispenser50 → NoteDispenser20 chain handles cash dispensing.
+Each dispenser either processes part of the amount or forwards to the next.
+This avoids hardcoding logic and allows adding/removing denominations easily.
+
+Q4. What happens if user enters wrong PIN multiple times?
+
+Answer:
+System should lock the card after 3 invalid attempts.
+UML doesn’t show it, but we can extend HasCardState with an attempt counter.
+This prevents brute-force attacks.
+
+Q5. What if ATM is out of cash but user has balance?
+
+Answer:
+BankService validates balance, but CashDispenser must validate ATM’s ability to dispense.
+If ATM cannot dispense exact notes, withdrawal fails even if user has balance.
+Example: ATM has only 100 notes, user requests 50.
+
+Q6. Why Singleton for ATMSystem?
+
+Answer:
+Only one ATM controller should exist.
+Ensures consistent state, logging, and transaction handling.
+Thread-safety must be considered (use std::mutex for instance creation in production).
+
+Q7. How would you handle concurrency in this design?
+
+Answer:
+
+Multiple ATMs may connect to the same BankService → need locks around account updates.
+In C++, use std::mutex and std::lock_guard to prevent race conditions.
+Example edge case: two withdrawals at same time → both must see updated balance.
+
+Q8. What happens if user ejects card during a transaction?
+
+Answer:
+
+If card is ejected before PIN → go back to IdleState.
+If card is ejected during transaction → cancel operation, rollback partial changes.
+BankService should ensure atomicity (transaction either fully completes or fails).
+
+Q9. How would you extend this design for online banking?
+
+Answer:
+
+Replace Card with UserLogin.
+States can represent login phases (Idle → LoggedIn → Authenticated).
+Withdraw operation replaced with online transfer.
+
+Q10. What design improvements can you suggest?
+
+Answer:
+
+Add Transaction entity for logging (timestamp, type, status).
+Add Observer pattern for notifying bank server after transaction.
+Add OutOfServiceState for ATM downtime.
+Use Factory Method to create dispensers dynamically.
