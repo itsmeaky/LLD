@@ -1,0 +1,296 @@
+1. Functional Requirements
+
+Users can browse cities.
+Users can view movies in a selected city.
+Users can see cinemas and available shows for a movie.
+Users can book tickets.
+Users can cancel bookings.
+Admins can add movies, shows, cinemas.
+
+2. Non-Functional Requirements
+
+Handle high traffic during movie release.
+Ensure ticket availability consistency.
+Scalable for multiple cities and cinemas.
+Fast search for movies and shows.
+===========================================================================================================
+3. Core Entities
+
+User: Registers, browses, books tickets.
+Movie: Details about movies.
+Cinema: Location and screens.
+Screen: Each cinema has multiple screens.
+Show: Movie at a screen at a specific time.
+Seat: Seats in a screen.
+Booking: Booking details and status.
+
+Optional patterns:
+
+Singleton: For BookingService or NotificationService.
+Factory: For creating Booking or Seat objects.
+Observer: Notify users for booking/cancellations.
+
+
+
+
+#include <iostream>
+#include <vector>
+#include <string>
+#include <unordered_map>
+#include <unordered_set>
+using namespace std;
+
+// ---------------- Movie ----------------
+class Movie {
+public:
+    int movieId;
+    string title;
+    int duration;
+    Movie(int id, const string& t, int d) : movieId(id), title(t), duration(d) {}
+};
+
+// ---------------- Seat ----------------
+class Seat {
+public:
+    int seatId;
+    bool isBooked;
+    Seat(int id) : seatId(id), isBooked(false) {}
+};
+
+// ---------------- Screen ----------------
+class Screen {
+public:
+    int screenId;
+    vector<Seat> seats;
+    Screen(int id, int totalSeats) : screenId(id) {
+        for (int i = 0; i < totalSeats; i++) seats.push_back(Seat(i));
+    }
+};
+
+// ---------------- Show ----------------
+class Show {
+public:
+    int showId;
+    Movie* movie;
+    Screen* screen;
+    string time;
+    Show(int id, Movie* m, Screen* s, const string& t) : showId(id), movie(m), screen(s), time(t) {}
+};
+
+// ---------------- Observer Pattern ----------------
+class Observer {
+public:
+    virtual void update(const string& message) = 0;
+};
+
+// ---------------- Booking ----------------
+class Booking {
+public:
+    int bookingId;
+    Show* show;
+    vector<Seat*> bookedSeats;
+    string status;
+    Booking(int id, Show* s) : bookingId(id), show(s), status("Pending") {}
+    void confirm() { status = "Confirmed"; }
+    void cancel() {
+        status = "Cancelled";
+        for (Seat* seat : bookedSeats) seat->isBooked = false;
+    }
+};
+
+// ---------------- Booking Factory ----------------
+class BookingFactory {
+public:
+    static Booking* createBooking(int id, Show* show, const vector<Seat*>& seats) {
+        Booking* b = new Booking(id, show);
+        b->bookedSeats = seats;
+        b->confirm();
+        return b;
+    }
+};
+
+// ---------------- User ----------------
+class User : public Observer {
+public:
+    string name;
+    vector<Booking*> bookings;
+    User(const string& n) : name(n) {}
+    void update(const string& message) override {
+        cout << "Notification for " << name << ": " << message << endl;
+    }
+    void bookTicket(Show* show, const vector<int>& seatIds) {
+        vector<Seat*> seats;
+        for (int id : seatIds) {
+            if (id >= 0 && id < show->screen->seats.size()) {
+                Seat* s = &show->screen->seats[id];
+                if (s->isBooked) {
+                    cout << "Seat " << id << " already booked!\n";
+                    return;
+                }
+                seats.push_back(s);
+                s->isBooked = true;
+            } else {
+                cout << "Seat " << id << " does not exist!\n";
+                return;
+            }
+        }
+        Booking* b = BookingFactory::createBooking(bookings.size() + 1, show, seats);
+        bookings.push_back(b);
+        cout << "Booking confirmed! Booking ID: " << b->bookingId << endl;
+    }
+    void cancelBooking(int bookingId) {
+        for (Booking* b : bookings) {
+            if (b->bookingId == bookingId) {
+                b->cancel();
+                cout << "Booking Cancelled! Booking ID: " << bookingId << endl;
+                return;
+            }
+        }
+        cout << "Booking ID not found!\n";
+    }
+};
+
+// ---------------- Cinema ----------------
+class Cinema {
+public:
+    string name;
+    vector<Screen*> screens;
+    vector<Show*> shows;
+    Cinema(const string& n) : name(n) {}
+    void addScreen(Screen* s) { screens.push_back(s); }
+    void addShow(Show* s) { shows.push_back(s); }
+    void displayShows() const {
+        for (const Show* s : shows)
+            cout << "Show ID: " << s->showId << ", Movie: " << s->movie->title
+                 << ", Time: " << s->time << endl;
+    }
+    vector<Movie*> getMovies() const {
+        unordered_set<int> unique;
+        vector<Movie*> movieList;
+        for (const Show* s : shows) {
+            if (unique.find(s->movie->movieId) == unique.end()) {
+                movieList.push_back(s->movie);
+                unique.insert(s->movie->movieId);
+            }
+        }
+        return movieList;
+    }
+};
+
+// ---------------- City ----------------
+class City {
+public:
+    string name;
+    vector<Cinema*> cinemas;
+    City(const string& n) : name(n) {}
+    void addCinema(Cinema* c) { cinemas.push_back(c); }
+    void displayMovies() const {
+        unordered_set<int> unique;
+        cout << "\nMovies in " << name << ":\n";
+        for (const Cinema* c : cinemas) {
+            for (const Show* s : c->shows) {
+                if (unique.find(s->movie->movieId) == unique.end()) {
+                    cout << "Movie ID: " << s->movie->movieId
+                         << ", Title: " << s->movie->title << endl;
+                    unique.insert(s->movie->movieId);
+                }
+            }
+        }
+    }
+    void displayCinemasForMovie(int movieId) const {
+        cout << "\nCinemas showing Movie ID " << movieId << ":\n";
+        for (const Cinema* c : cinemas) {
+            for (const Show* s : c->shows) {
+                if (s->movie->movieId == movieId) {
+                    cout << "Cinema: " << c->name << ", Show ID: " << s->showId
+                         << ", Time: " << s->time << endl;
+                }
+            }
+        }
+    }
+};
+
+// ---------------- Singleton Admin (Subject for Notifications) ----------------
+class Admin {
+private:
+    static Admin* instance;
+    vector<Observer*> observers;
+    Admin() {}
+public:
+    static Admin* getInstance() {
+        if (!instance) instance = new Admin();
+        return instance;
+    }
+    void addObserver(Observer* o) { observers.push_back(o); }
+    void notify(const string& message) {
+        for (Observer* o : observers) o->update(message);
+    }
+    void addMovie(unordered_map<int, Movie*>& movies, int id, const string& title, int duration) {
+        movies[id] = new Movie(id, title, duration);
+        notify("New movie added: " + title);
+    }
+    void addShow(Cinema* cinema, Movie* movie, Screen* screen, int showId, const string& time) {
+        Show* s = new Show(showId, movie, screen, time);
+        cinema->addShow(s);
+        notify("New show added for movie: " + movie->title + " at " + time);
+    }
+};
+Admin* Admin::instance = nullptr;
+
+// ---------------- Main ----------------
+int main() {
+    unordered_map<int, Movie*> movies;
+
+    // Admin Singleton
+    Admin* admin = Admin::getInstance();
+
+    // Users (Observers)
+    User u1("Amit");
+    User u2("Riya");
+    admin->addObserver(&u1);
+    admin->addObserver(&u2);
+
+    // Add movies
+    admin->addMovie(movies, 1, "Avengers", 180);
+    admin->addMovie(movies, 2, "Inception", 150);
+
+    // Create cinemas and screens
+    Cinema* cine1 = new Cinema("PVR Delhi");
+    Cinema* cine2 = new Cinema("Cinepolis Delhi");
+
+    Screen* screen1 = new Screen(1, 5);
+    Screen* screen2 = new Screen(2, 5);
+    Screen* screen3 = new Screen(3, 5);
+
+    cine1->addScreen(screen1);
+    cine1->addScreen(screen2);
+    cine2->addScreen(screen3);
+
+    // Add shows
+    admin->addShow(cine1, movies[1], screen1, 1, "10:00AM");
+    admin->addShow(cine1, movies[2], screen2, 2, "2:00PM");
+    admin->addShow(cine2, movies[1], screen3, 3, "1:00PM");
+
+    // Create city
+    City delhi("Delhi");
+    delhi.addCinema(cine1);
+    delhi.addCinema(cine2);
+
+    // User browsing
+    delhi.displayMovies();
+    delhi.displayCinemasForMovie(1);
+
+    // Users book tickets
+    u1.bookTicket(cine1->shows[0], {0, 1});
+    u2.bookTicket(cine2->shows[0], {0, 1});
+
+    // Clean up
+    for (auto& m : movies) delete m.second;
+    delete screen1;
+    delete screen2;
+    delete screen3;
+    delete cine1;
+    delete cine2;
+
+    return 0;
+}
