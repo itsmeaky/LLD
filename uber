@@ -1,0 +1,341 @@
+Functional:
+
+Rider can request a ride (pickup location, destination).
+System matches rider to an available driver (simple nearest-driver strategy).
+Driver receives request and can accept; trip starts and ends.
+Fare calculation and simple payment/receipt generation.
+Rider & driver histories stored.
+
+Non-functional:
+
+Low latency matching (fast responses).
+Scalable (partitioning by city/region).
+Highly available dispatch service.
+Extensible: support different matching strategies, surge pricing, pool/shared rides.
+
+===========================core entities=============================================
+
+Core entities (conceptual)
+User (base) → Rider, Driver
+Location (latitude, longitude)
+Vehicle
+Ride (trip state: REQUESTED, ACCEPTED, ONGOING, COMPLETED, CANCELLED)
+MatchingStrategy (interface) — Strategy pattern
+RideManager / Dispatch — coordinates requests, matches drivers, starts rides
+Payment / FareCalculator
+Repository classes for storing drivers/riders/rides (in-memory for demo)
+
+
+=========================design patterns ===========================================
+Design patterns used
+
+Strategy — for different matching algorithms (MatchingStrategy).
+Factory (lightweight idea) — could be used for strategy selection (not strictly necessary here).
+Singleton (optional) — for centralized RideManager in a real system (demo uses a single instance).
+Observer (conceptual) — to notify driver/rider about events (we simulate with direct calls).
+
+========================edge cases ================================================
+Answer:
+
+1.No available drivers → Notify rider; option to retry later or expand search radius.
+2.Driver cancels after accepting → Re-run matching, notify rider of reassignment.
+4.Multiple riders request same driver at the same time → Need concurrency control (locks, transactions).
+5.Payment failure → Retry mechanism, alternative payment methods, mark trip unpaid.
+6.Surge pricing scenario → Pricing strategy switch based on demand/supply ratio.
+
+========================code ============================================================
+
+#include <iostream>
+#include <string>
+#include <vector>
+#include <cmath>
+#include <limits>
+#include <map>
+using namespace std;
+
+// ---------- Location ----------
+class Location {
+    double lat;
+    double lon;
+public:
+    Location() : lat(0), lon(0) {}
+    Location(double lat_, double lon_) : lat(lat_), lon(lon_) {}
+    double getLat() const { return lat; }
+    double getLon() const { return lon; }
+    // Haversine-like (approx) distance in kilometers (simplified)
+    double distanceTo(const Location& other) const {
+        double dx = lat - other.lat;
+        double dy = lon - other.lon;
+        return sqrt(dx*dx + dy*dy) * 111.0; // rough conversion: 1 degree ≈ 111 km
+    }
+};
+
+// ---------- User ----------
+class User {
+protected:
+    string id;
+    string name;
+public:
+    User(const string& id_, const string& name_) : id(id_), name(name_) {}
+    virtual ~User() = default;
+    string getId() const { return id; }
+    string getName() const { return name; }
+};
+
+// ---------- Rider ----------
+class Rider : public User {
+public:
+    Rider(const string& id_, const string& name_) : User(id_, name_) {}
+};
+
+// ---------- Vehicle ----------
+class Vehicle {
+    string plate;
+    string model;
+public:
+    Vehicle(const string& plate_, const string& model_) : plate(plate_), model(model_) {}
+    string getPlate() const { return plate; }
+    string getModel() const { return model; }
+};
+
+// ---------- Driver ----------
+enum class DriverStatus { OFFLINE, AVAILABLE, ON_TRIP };
+
+class Driver : public User {
+    Vehicle vehicle;
+    Location location;
+    DriverStatus status;
+public:
+    Driver(const string& id_, const string& name_, const Vehicle& v, const Location& loc)
+        : User(id_, name_), vehicle(v), location(loc), status(DriverStatus::AVAILABLE) {}
+
+    const Location& getLocation() const { return location; }
+    void setLocation(const Location& loc) { location = loc; }
+
+    DriverStatus getStatus() const { return status; }
+    void setStatus(DriverStatus s) { status = s; }
+
+    const Vehicle& getVehicle() const { return vehicle; }
+
+    // Simulate driver accepting a ride
+    bool acceptRide(const string& rideId) {
+        // For demo, driver always accepts if available
+        if (status == DriverStatus::AVAILABLE) {
+            setStatus(DriverStatus::ON_TRIP);
+            cout << "Driver " << name << " accepted ride " << rideId << "\n";
+            return true;
+        }
+        cout << "Driver " << name << " cannot accept ride " << rideId << " (not available)\n";
+        return false;
+    }
+
+    void finishRide() {
+        setStatus(DriverStatus::AVAILABLE);
+    }
+};
+
+// ---------- Ride ----------
+enum class RideStatus { REQUESTED, ACCEPTED, ONGOING, COMPLETED, CANCELLED };
+
+class Ride {
+    string id;
+    string riderId;
+    string driverId;
+    Location pickup;
+    Location destination;
+    RideStatus status;
+    double fare;
+public:
+    Ride(const string& id_, const string& riderId_, const Location& pickup_, const Location& destination_)
+        : id(id_), riderId(riderId_), pickup(pickup_), destination(destination_), status(RideStatus::REQUESTED), fare(0.0) {}
+
+    string getId() const { return id; }
+    string getRiderId() const { return riderId; }
+    string getDriverId() const { return driverId; }
+    void assignDriver(const string& dId) { driverId = dId; status = RideStatus::ACCEPTED; }
+    void start() { status = RideStatus::ONGOING; }
+    void complete(double fare_) { status = RideStatus::COMPLETED; fare = fare_; }
+    RideStatus getStatus() const { return status; }
+    double getFare() const { return fare; }
+
+    double estimateDistance() const { return pickup.distanceTo(destination); }
+};
+
+// ---------- FareCalculator ----------
+class FareCalculator {
+    double baseFare;
+    double perKm;
+public:
+    FareCalculator(double baseFare_ = 2.0, double perKm_ = 1.0) : baseFare(baseFare_), perKm(perKm_) {}
+    double calculate(const Ride& ride) {
+        double dist = ride.estimateDistance(); // km approximation
+        double fare = baseFare + perKm * dist;
+        if (fare < 1.0) fare = 1.0;
+        return fare;
+    }
+};
+
+// ---------- Matching Strategy (Strategy Pattern) ----------
+class MatchingStrategy {
+public:
+    virtual ~MatchingStrategy() = default;
+    // returns driver index in drivers vector or -1 if none
+    virtual int findDriver(const Location& pickup,
+                           const vector<Driver>& drivers) = 0;
+};
+
+class NearestDriverStrategy : public MatchingStrategy {
+public:
+    int findDriver(const Location& pickup, const vector<Driver>& drivers) override {
+        double bestDist = numeric_limits<double>::infinity();
+        int bestIdx = -1;
+        for (size_t i = 0; i < drivers.size(); ++i) {
+            const Driver& d = drivers[i];
+            if (d.getStatus() != DriverStatus::AVAILABLE) continue;
+            double dist = pickup.distanceTo(d.getLocation());
+            if (dist < bestDist) {
+                bestDist = dist;
+                bestIdx = static_cast<int>(i);
+            }
+        }
+        return bestIdx;
+    }
+};
+
+// ---------- Simple In-Memory Repositories ----------
+class DriverRepository {
+    vector<Driver> drivers;
+public:
+    void addDriver(const Driver& d) { drivers.push_back(d); }
+    vector<Driver>& getAllDrivers() { return drivers; }
+    Driver* getDriverById(const string& id) {
+        for (auto &d : drivers) if (d.getId() == id) return &d;
+        return nullptr;
+    }
+};
+
+class RiderRepository {
+    vector<Rider> riders;
+public:
+    void addRider(const Rider& r) { riders.push_back(r); }
+    Rider* getRiderById(const string& id) {
+        for (auto &r : riders) if (r.getId() == id) return &r;
+        return nullptr;
+    }
+};
+
+class RideRepository {
+    map<string, Ride> rides;
+public:
+    void addRide(const Ride& r) { rides.emplace(r.getId(), r); }
+    Ride* getRideById(const string& id) {
+        auto it = rides.find(id);
+        if (it == rides.end()) return nullptr;
+        return &it->second;
+    }
+};
+
+// ---------- Ride Manager (Dispatch) ----------
+class RideManager {
+    DriverRepository& driverRepo;
+    RiderRepository& riderRepo;
+    RideRepository& rideRepo;
+    MatchingStrategy* matchingStrategy;
+    FareCalculator fareCalc;
+    int rideSeq = 0;
+
+    string nextRideId() {
+        ++rideSeq;
+        return "ride_" + to_string(rideSeq);
+    }
+
+public:
+    RideManager(DriverRepository& dr, RiderRepository& rr, RideRepository& rrepo, MatchingStrategy* ms)
+        : driverRepo(dr), riderRepo(rr), rideRepo(rrepo), matchingStrategy(ms) {}
+
+    // Rider requests ride
+    string requestRide(const string& riderId, const Location& pickup, const Location& dest) {
+        Rider* rider = riderRepo.getRiderById(riderId);
+        if (!rider) {
+            cout << "Rider not found\n";
+            return "";
+        }
+        string rideId = nextRideId();
+        Ride ride(rideId, riderId, pickup, dest);
+        rideRepo.addRide(ride);
+        cout << "Ride requested: " << rideId << " by rider " << rider->getName() << "\n";
+
+        // Find driver
+        int idx = matchingStrategy->findDriver(pickup, driverRepo.getAllDrivers());
+        if (idx < 0) {
+            cout << "No drivers available right now.\n";
+            return rideId;
+        }
+
+        // Assign driver
+        Driver& matched = driverRepo.getAllDrivers()[idx];
+        bool accepted = matched.acceptRide(rideId);
+        if (!accepted) {
+            cout << "Matched driver couldn't accept. Try again or match another.\n";
+            return rideId;
+        }
+
+        Ride* rptr = rideRepo.getRideById(rideId);
+        if (!rptr) return rideId;
+        rptr->assignDriver(matched.getId());
+        rptr->start(); // driver picked up immediately for demo
+
+        // Simulate trip completion immediately for demo
+        double fare = fareCalc.calculate(*rptr);
+        rptr->complete(fare);
+        matched.finishRide();
+
+        cout << "Ride " << rideId << " completed. Fare: " << fare << "\n";
+        return rideId;
+    }
+
+    Ride* getRide(const string& id) { return rideRepo.getRideById(id); }
+};
+
+// ---------- Demo main ----------
+int main() {
+    // Repositories
+    DriverRepository dRepo;
+    RiderRepository rRepo;
+    RideRepository rideRepo;
+
+    // Add drivers
+    dRepo.addDriver(Driver("driver_1", "Alice", Vehicle("KA01X1234", "Toyota Prius"), Location(12.9716, 77.5946)));
+    dRepo.addDriver(Driver("driver_2", "Bob", Vehicle("KA01Y5678", "Honda City"), Location(12.9616, 77.5846)));
+    dRepo.addDriver(Driver("driver_3", "Charlie", Vehicle("KA01Z9999", "Hyundai"), Location(13.0016, 77.6246)));
+
+    // Add rider
+    rRepo.addRider(Rider("rider_1", "Eve"));
+
+    // Matching strategy
+    NearestDriverStrategy strategy;
+
+    // Ride manager
+    RideManager manager(dRepo, rRepo, rideRepo, &strategy);
+
+    // Rider requests a ride
+    Location pickup(12.9650, 77.5900);
+    Location dest(12.9750, 77.6050);
+    string rideId = manager.requestRide("rider_1", pickup, dest);
+
+    // Inspect ride
+    Ride* ride = manager.getRide(rideId);
+    if (ride) {
+        cout << "Ride " << ride->getId() << " status: ";
+        switch (ride->getStatus()) {
+            case RideStatus::COMPLETED: cout << "COMPLETED"; break;
+            case RideStatus::ONGOING: cout << "ONGOING"; break;
+            case RideStatus::REQUESTED: cout << "REQUESTED"; break;
+            case RideStatus::ACCEPTED: cout << "ACCEPTED"; break;
+            case RideStatus::CANCELLED: cout << "CANCELLED"; break;
+        }
+        cout << ", fare: " << ride->getFare() << "\n";
+    }
+
+    return 0;
+}
