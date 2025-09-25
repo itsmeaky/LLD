@@ -1,0 +1,458 @@
+Requirements:
+2. support different types of vehicle, such as cars, motorcycles, and trucks.
+2. multiple levels, each level with a certain number of parking spots.
+3. parking spot to a vehicle upon entry and release it when the vehicle exits.
+4. Handle concurrency 
+======================================================================================================
+classes :
+1. ParkingLot - ensure one instance , support park and unpark vehicles.
+2. Parking floor - parking and unparking of vehicles within the level 
+3. ParkingSpot - availability and parked vehicle.
+4. Vehicle - abstract class , extended by Car, Motorcycle, and Truck classes
+5. VehicleType - enum - {small, medium, large}
+6. parking Ticket - assigned at parking
+======================================================================================================
+design patterns used :
+1. Singleton Pattern: ParkingLot class.
+2. strategy pattern - parkingstrategy and fee strategy
+2. Factory Pattern (optional extension): creating vehicles based on input.
+3. Observer Pattern (optional extension): Could notify customers about available spots.
+Multi-threading is achieved through the use of synchronized keyword on critical sections to ensure thread safety.
+
+=======================================================================================================
+code : 
+#include <iostream>
+#include <string>
+#include <vector>
+#include <map>
+#include <memory>
+#include <optional>
+#include <ctime>
+using namespace std;
+
+// ---------------- ENUM ----------------
+enum class VehicleSize { SMALL, MEDIUM, LARGE };
+
+// ---------------- VEHICLE ----------------
+
+// Abstact class 
+class Vehicle {
+protected:
+    VehicleSize size;
+    string licenseNumber;
+public:
+    Vehicle(VehicleSize s, string l) : size(s), licenseNumber(l) {}
+    VehicleSize getSize() const { return size; }
+    string getLicenseNumber() const { return licenseNumber; }
+};
+
+
+**is - a vehicle
+class Bike : public Vehicle {
+public: Bike(string l) : Vehicle(VehicleSize::SMALL, l) {}
+};
+class Car : public Vehicle {
+public: Car(string l) : Vehicle(VehicleSize::MEDIUM, l) {}
+};
+class Truck : public Vehicle {
+public: Truck(string l) : Vehicle(VehicleSize::LARGE, l) {}
+};
+** in future -> factory pattern ->creating vehicles based on input.
+
+// ==================== PARKING SPOT ====================================================================================================
+**has - a vehicle 
+class ParkingSpot {
+    VehicleSize spotSize;
+    string spotId;
+    bool occupied;
+    Vehicle* vehicle;
+public:
+    ParkingSpot(string id, VehicleSize size) : spotId(id), spotSize(size), occupied(false), vehicle(nullptr) {}
+    bool isAvailable() { return !occupied; }
+    bool canFitVehicle(Vehicle* v) { return v->getSize() == spotSize && !occupied; }
+    void parkVehicle(Vehicle* v) { vehicle = v; occupied = true; }
+    void unparkVehicle() { vehicle = nullptr; occupied = false; }
+    string getId() const { return spotId; }
+    Vehicle* getVehicle() const { return vehicle; }
+};
+
+
+//  ====================  PARKING FLOOR  ====================  ====================  ====================  ==================== 
+has - a many relation with parkingspot
+class ParkingFloor {
+    string floorNumber;
+    vector<unique_ptr<ParkingSpot>> spots;
+public:
+    ParkingFloor(string num) : floorNumber(num) {}
+    void addSpot(unique_ptr<ParkingSpot> spot) { spots.push_back(move(spot)); }
+
+    optional<ParkingSpot*> findAvailableSpot(Vehicle* v) {
+        for (auto& s : spots) {
+            if (s->canFitVehicle(v)) return s.get();
+        }
+        return {};
+    }
+
+    void displayAvailability() {
+        cout << "Floor " << floorNumber << " availability: ";
+        for (int i = 0; i < spots.size(); i++) {
+            cout << (spots[i]->isAvailable() ? "[ ]" : "[X]");
+        }
+        cout << endl;
+    }
+};
+
+
+// ==================== PARKING TICKET ====================================================================================================
+class ParkingTicket {
+    ParkingSpot* spot;
+    string ticketId;
+    long entryTimestamp;
+    long exitTimestamp;
+    Vehicle* vehicle;
+public:
+    ParkingTicket(ParkingSpot* s, Vehicle* v, string id)
+        : spot(s), vehicle(v), ticketId(id) {
+        entryTimestamp = time(0);
+        exitTimestamp = -1;
+    }
+    void closeTicket() { exitTimestamp = time(0); }
+    long getDurationHours() {
+        if (exitTimestamp == -1) return 0;
+        return (exitTimestamp - entryTimestamp) / 3600 + 1;
+    }
+    Vehicle* getVehicle() { return vehicle; }
+    string getId() { return ticketId; }
+};
+
+// Forward declarations
+class ParkingSpot;
+class ParkingTicket;
+
+// ==================== FEE STRATEGY ====================================================================================================
+class FeeStrategy {
+public:
+    virtual double calculateFee(const ParkingTicket& ticket) = 0;
+    virtual ~FeeStrategy() {}
+};
+
+class FlatRateFeeStrategy : public FeeStrategy {
+    const double RATE_PER_HOUR = 10.0;
+public:
+    double calculateFee( ParkingTicket& ticket) override{
+    return RATE_PER_HOUR * ticket.getDurationHours();
+    }
+};
+
+class VehicleBasedFeeStrategy : public FeeStrategy {
+    map<VehicleSize, double> HOURLY_RATES;
+public:
+    VehicleBasedFeeStrategy() {
+        HOURLY_RATES[VehicleSize::SMALL] = 5.0;
+        HOURLY_RATES[VehicleSize::MEDIUM] = 10.0;
+        HOURLY_RATES[VehicleSize::LARGE] = 15.0;
+    }
+    double calculateFee(ParkingTicket& ticket) override{
+        VehicleSize s = ticket.getVehicle()->getSize();
+        return HOURLY_RATES[s] * ticket.getDurationHours();
+    }
+
+};
+
+
+// ==================== PARKING STRATEGY ====================================================================================================
+abstract class , strategy design pattern;
+class ParkingStrategy {
+public:
+    virtual ParkingSpot* findSpot(vector<ParkingSpot*>& spots, Vehicle* v) = 0;
+    virtual ~ParkingStrategy() {}
+};
+
+class NearestFirstStrategy : public ParkingStrategy {
+public:
+    ParkingSpot* findSpot(vector<ParkingSpot*>& spots, Vehicle* v) {
+        for (auto& s : spots) if (s->canFit(v)) return s;
+        return nullptr;
+    }
+};
+** can have bestfit strategy , farthestfirst strategy; 
+
+// ==================== PARKING LOT SYSTEM (SINGLETON) ====================================================================================================
+class ParkingLotSystem {
+    vector<unique_ptr<ParkingFloor>> floors;
+    map<string, unique_ptr<ParkingTicket>> activeTickets;       --------------> ticked id -> parking ticket
+    unique_ptr<ParkingStrategy> parkingStrategy;
+    unique_ptr<FeeStrategy> feeStrategy;
+
+    ParkingLotSystem() {
+        parkingStrategy = make_unique<NearestFirstStrategy>();
+        feeStrategy = make_unique<FlatRateFeeStrategy>();
+    }
+
+private : 
+    static Singleton* instance_;
+    static std::mutex mutex_;
+public:
+    
+    static ParkingLotSystem* getInstance() {
+        std::lock_guard<std::mutex> lock(mutex_); [1.3.1]
+        if (instance_ == nullptr) {
+            instance_ = new ParkingLotSystem();
+        }
+        return instance_;
+    }
+
+    void addFloor(unique_ptr<ParkingFloor> floor) {
+        floors.push_back(move(floor));
+    }
+
+    void setParkingStrategy(unique_ptr<ParkingStrategy> strategy) {
+        parkingStrategy = move(strategy);
+    }
+    void setFeeStrategy(unique_ptr<FeeStrategy> strategy) {
+        feeStrategy = move(strategy);
+    }
+
+    optional<ParkingTicket*> parkVehicle(Vehicle* v) {
+        vector<ParkingFloor*> rawFloors;
+        for (auto& f : floors) rawFloors.push_back(f.get());
+
+        auto spotOpt = parkingStrategy->findSpot(rawFloors, v);
+        if (!spotOpt) return {};      -----------> 
+        ParkingSpot* spot = *spotOpt;
+        spot->parkVehicle(v);
+
+        string ticketId = v->getLicenseNumber() + "_ticket";
+        auto ticket = make_unique<ParkingTicket>(spot, v, ticketId);
+        ParkingTicket* ticketPtr = ticket.get();
+        activeTickets[ticketId] = move(ticket);
+        return ticketPtr;
+    }
+
+    optional<double> unparkVehicle(string ticketId) {
+        if (activeTickets.find(ticketId) == activeTickets.end()) return {};
+        auto& ticket = activeTickets[ticketId];
+        ticket->closeTicket();
+        double fee = feeStrategy->calculateFee(*ticket);
+        ticket->getVehicle(); // can be used for logging
+        activeTickets.erase(ticketId);
+        return fee;
+    }
+
+    void showStatus() {
+        for (auto& f : floors) f->displayAvailability();
+    }
+};
+
+Singleton* Singleton::instance_ = nullptr;
+std::mutex Singleton::mutex_;
+
+// ---------------- DEMO ----------------
+int main() {
+    ParkingLotSystem& lot = ParkingLotSystem::getInstance();
+
+    // Create Floor 1
+    auto f1 = make_unique<ParkingFloor>("F1");
+    f1->addSpot(make_unique<ParkingSpot>("F1S1", VehicleSize::SMALL));
+    f1->addSpot(make_unique<ParkingSpot>("F1M1", VehicleSize::MEDIUM));
+
+    // Create Floor 2
+    auto f2 = make_unique<ParkingFloor>("F2");
+    f2->addSpot(make_unique<ParkingSpot>("F2L1", VehicleSize::LARGE));
+
+    lot.addFloor(move(f1));
+    lot.addFloor(move(f2));
+
+    Vehicle* car = new Car("KA01");
+    Vehicle* bike = new Bike("KA02");
+
+    lot.showStatus();
+
+    auto ticket1 = lot.parkVehicle(car);
+    auto ticket2 = lot.parkVehicle(bike);
+
+    lot.showStatus();
+
+    if (ticket1) {
+        cout << "Car parked with ticket: " << car->getLicenseNumber() + "_ticket" << endl;
+    }
+    if (ticket2) {
+        cout << "Bike parked with ticket: " << bike->getLicenseNumber() + "_ticket" << endl;
+    }
+
+    auto fee = lot.unparkVehicle("KA01_ticket");
+    if (fee) cout << "Car unparked. Fee: " << *fee << endl;
+
+    lot.showStatus();
+
+    return 0;
+}
+
+===============================flow daigram ===================================================================================
+flow daigram : 
+        Vehicle Arrives
+              |
+              v
+       [ParkingLotSystem]
+              |
+              v
+   Select ParkingStrategy
+              |
+              v
+  Find Available Spot on Floor
+        /            \
+   Spot Found       No Spot
+        |             |
+        v             v
+  Allocate Spot   Return "Full"
+  Generate Ticket
+
+** vehicle leaves
+       Vehicle Leaves
+              |
+              v
+   we get Ticket ID
+              |
+              v
+   Fetch ParkingTicket
+              |
+              v
+   Record Exit Timestamp
+              |
+              v
+   Apply FeeStrategy
+              |
+              v
+   Calculate Fee
+              |
+              v
+   Free Spot + Return Fee
+
+
+==============================Interview Questions========================================================================================
+1. Q: Which design patterns are used in this Parking Lot System UML? Why?
+
+A:
+
+Singleton Pattern → ParkingLotSystem is a singleton because we should only have one parking lot system in an application.
+
+Strategy Pattern → Used in two places:
+
+ParkingStrategy (NearestFirst, BestFit, FarthestFirst).
+
+FeeStrategy (FlatRate, VehicleBased).
+This allows runtime selection of algorithms without modifying the main system.
+
+Composition → ParkingFloor has multiple ParkingSpot, and ParkingLotSystem has multiple ParkingFloor.
+
+Polymorphism → Vehicles (Bike, Car, Truck) inherit from base Vehicle.
+
+2. Q: Why did we separate ParkingStrategy and FeeStrategy into interfaces?
+
+A:
+
+To follow the Open-Closed Principle (OCP) → new strategies (like dynamic surge pricing, premium spots) can be added without changing existing code.
+
+It makes the system flexible and extensible. For example, we can switch from FlatRateFeeStrategy to VehicleBasedFeeStrategy at runtime.
+
+3. Q: How does the system handle different vehicle sizes?
+
+A:
+
+Each ParkingSpot has a VehicleSize (SMALL, MEDIUM, LARGE).
+
+A Vehicle also has a size.
+
+ParkingSpot::canFitVehicle() ensures a vehicle can only park in a matching spot size.
+This ensures logical allocation (e.g., Truck cannot park in a Bike spot).
+
+4. Q: Why do we need ParkingTicket? What is stored in it?
+
+A:
+
+To track entry/exit times of vehicles.
+
+To calculate fees when the vehicle exits.
+
+It stores:
+
+Vehicle reference.
+
+ParkingSpot reference.
+
+Entry and exit timestamps.
+
+Ticket ID.
+This also helps in auditing and reporting.
+
+5. Q: What would you do if two vehicles try to park in the same spot at the same time (concurrency)?
+
+A:
+
+Use thread synchronization (mutex/lock_guard) when allocating spots.
+
+In a real-world distributed system, use transaction locks or atomic operations in DB.
+This prevents race conditions.
+
+6. Q: How does the system ensure scalability?
+
+A:
+
+By abstracting ParkingFloor → We can add unlimited floors without changing other code.
+
+By using ParkingStrategy → We can optimize for large lots (e.g., BestFit to balance floors).
+
+By using interfaces → We can extend without modifying core system.
+
+7. Q: Can you explain Single Responsibility Principle (SRP) in this UML?
+
+A:
+
+Each class has a single responsibility:
+
+Vehicle → holds vehicle info.
+
+ParkingSpot → manages one spot’s state.
+
+ParkingFloor → manages spots in a floor.
+
+ParkingTicket → manages entry/exit info.
+
+ParkingLotSystem → coordinates the whole system.
+
+FeeStrategy → only calculates fees.
+This ensures modularity.
+
+8. Q: How would you extend this system to support EV Charging Stations?
+
+A:
+
+Add a new class ChargingSpot : public ParkingSpot.
+
+Modify Vehicle to have an attribute requiresCharging.
+
+Extend ParkingStrategy to prioritize charging spots for EVs.
+This shows how extensibility is achieved via inheritance and strategy pattern.
+
+9. Q: What happens if all spots are full?
+
+A:
+
+ParkingStrategy::findSpot returns nullopt.
+
+ParkingLotSystem::parkVehicle returns empty optional<ParkingTicket*>.
+
+Caller can handle it by showing "Parking Full".
+This is how system gracefully handles capacity limits.
+
+10. Q: Suppose you want to implement dynamic pricing during peak hours. Where would you modify?
+
+A:
+
+Add a new strategy → PeakHourFeeStrategy : public FeeStrategy.
+
+Use time-based rules to apply surge pricing.
+
+Swap strategies at runtime with setFeeStrategy().
+This keeps system open for extension but closed for modification (OCP).
+
